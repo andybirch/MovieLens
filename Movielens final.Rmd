@@ -7,7 +7,7 @@ output:
     extra_dependencies: ["float"]
 toc: TRUE
 ---
-And this one
+
 ```{r setup, include=FALSE}
 # Set global options and formatting
 
@@ -22,8 +22,7 @@ chart_col_2 <- "#BA328B"
 chart_back <- "#DBDBD3"
 ```
 
-```{r data_download, include  = FALSE }
-
+```{r load packages}
 # Install and load packages
 if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
 if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
@@ -44,7 +43,9 @@ library(broom)
 library(kableExtra)
 library(lubridate)
 library(recosystem)
+```
 
+```{r download and prepare initial data, include  = FALSE }
 # MovieLens 10M dataset:
 # https://grouplens.org/datasets/movielens/10m/
 # http://files.grouplens.org/datasets/movielens/ml-10m.zip
@@ -240,6 +241,15 @@ Whilst the skew for reviews per user is less extreme, it is still strong and reg
 
 ## iv. genres
 
+```{r time fields, echo = FALSE}
+# Add new time based fields
+Sys.setenv(TZ="UTC")
+edx <- edx %>% mutate(released = as.numeric(str_sub(title, str_length(title)-4, str_length(title)-1)),
+        review_year = year(round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "year")),
+        review_yearmon = round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "month"),
+        review_age = review_year - released)
+```
+
 ```{r distinct genres, echo = FALSE }
 # Create list of the unique genres, to be used below
 genres <- edx %>% group_by(genres) %>% summarise(n_reviews = n(), n_movies = n_distinct(movieId)) %>% 
@@ -283,15 +293,6 @@ edx %>% filter(str_detect(title, "Star Trek")) %>% group_by(title, genres, relea
 Whilst there are common elements between the genres within each franchise, they are generally distinct from each other. Therefore it looks unlikely that *genre* will provide stronger predictive power for *rating* than *movieId* and *userId*.
 
 ## v. timestamp
-
-```{r time fields, echo = FALSE}
-# Add new time based fields
-Sys.setenv(TZ="UTC")
-edx <- edx %>% mutate(released = as.numeric(str_sub(title, str_length(title)-4, str_length(title)-1)),
-        review_year = year(round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "year")),
-        review_yearmon = round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "month"),
-        review_age = review_year - released)
-```
 
 The timestamp records when the review was submitted, measured in the number of seconds since 1st Jan 1970 (UTC). The movie *title* also contains the year that the movie was released, so this is extracted to calculate the age of the movie at the time of each review.
 
