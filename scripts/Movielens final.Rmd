@@ -1,0 +1,703 @@
+---
+title: "HarvardX PH125.9x Data Science: Capstone"
+author: "Andy Birch"
+date: "10/05/2021"
+output: 
+  pdf_document:
+    extra_dependencies: ["float"]
+toc: TRUE
+---
+
+```{r setup, include=FALSE}
+# Set global options and formatting
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,  fig.show = "hold")
+knitr::knit_hooks$set(inline = function(x) { if(!is.numeric(x)){ x }else{ prettyNum(round(x,2), big.mark=",") } })
+KableTidy = function(x) {
+  knitr::kable(x, format.args = list(decimal.mark = '.', big.mark = ",",booktabs = TRUE), align = "c", digits = 2) %>% kable_styling(latex_options = c("striped", "hold_position"), font_size = 8)
+}
+
+chart_col_1 <- "#008B61"
+chart_col_2 <- "#BA328B"
+chart_back <- "#DBDBD3"
+```
+
+```{r data_download, include  = FALSE }
+
+# Install and load packages
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(stringr)) install.packages("stringr", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(broom)) install.packages("broom", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(recosystem)) install.packages("recosystem", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(stringr)
+library(ggthemes)
+library(broom)
+library(kableExtra)
+library(lubridate)
+library(recosystem)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+# Extend the timeout to ensure file download is completed
+options(timeout = 300)
+
+# Code provided in course materials to download the initial file
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+target <- 0.8649  # set the target RMSE
+```
+
+\pagebreak
+
+# 1. Introduction
+This analysis makes use of the MovieLens 10m dataset, which contains over ten million movie ratings provided by the GroupLens research group at the Department of Computer Science and Engineering at the University of Minnesota[^1].
+
+The specific task is to build a recommendation system that can accurately predict the rating that a user will give for a movie. The real life application of such a prediction would be to allow a company that sells or streams movies to make tailored recommendations that could drive sales and or engagement with the company.
+
+This report is being submitted as part of the capstone project for the HarvardX PH125.9x
+Data Science course. The target for the final algorithm is to achieve an average root mean squared error (RMSE) of  `r target` or below.
+
+
+[^1]: F. Maxwell Harper and Joseph A. Konstan. 2015. The MovieLens Datasets: History and Context. ACM Transactions on Interactive Intelligent Systems (TiiS) 5, 4, Article 19 (December 2015), 19 pages. DOI=http://dx.doi.org/10.1145/2827872]
+
+\pagebreak
+
+# 2. Data 
+## i. Dataset checks
+The script provided in the course materials downloads the data as a zip file from the GroupLens website[^2] and prepares a single tidy file, *movielens*. This dataset contains `r nrow(movielens)` rows, with each representing a review for an individual movie (*movieId*) supplied by an individual user (*userId*). There are a total of `r ncol(movielens)` columns with the following attributes:
+
+
+[^2]: http://files.grouplens.org/datasets/movielens/
+
+```{r data structure, echo = FALSE}
+# Show data fields, types, number of distinct values and check for missing values
+data.frame(Type = sapply(movielens, class), 
+           Distinct_values = sapply(movielens, n_distinct), 
+           Missing_values = sapply(movielens, function(x) sum(is.na(x)))) %>% KableTidy
+```
+
+Given that there a potential total number of `r n_distinct(movielens$movieId) * n_distinct(movielens$userId)` combinations of *moveId* and *userId*, the dataset with `r nrow(movielens)` records is very sparse, representing `r nrow(movielens) * 100 / (n_distinct(movielens$movieId) * n_distinct(movielens$userId))`% of the potential combinations.  
+
+There are no missing values to contend with, but we can see a disparity in the number of unique values for  *movieId* and *title*. We can see that each *movieId* always refers to a single *title*:
+
+```{r duplicate title check}
+# List any movieId that has multiple titles
+movielens %>% group_by(movieId) %>% summarise(titles = n_distinct(title)) %>% filter(titles !=1)
+```
+
+However one *title* has two different *movieId*s:
+
+```{r duplicate movieID check}
+# List any title that has multiple movieIds
+(multi_movieId <- movielens %>% group_by(title) %>% summarise(movies = n_distinct(movieId)) %>% filter(movies !=1) %>% left_join(movielens, by = "title") %>% group_by(title, movieId) %>% summarise(reviews = n())) %>% KableTidy
+```
+
+The use of a second *movieId* appears to be a mistake, but it has only been used for `r multi_movieId$reviews[2]*100/(multi_movieId$reviews[1]+multi_movieId$reviews[2])`% of the reviews. Therefore it will have little impact on our ability to predict ratings for this title and will have an extremely neglible impact the overall predicitve power of any algorithm.
+
+Finally lets check that each record is a unique combination of a *movieId* and a *userId*:
+
+```{r unique record check}
+# Check if each row is a unique combination of userId and movieId
+n_distinct(paste0(movielens$movieId, "-", movielens$userId)) == nrow(movielens)
+```
+
+Having completed these simple checks, we know that the data is of sufficient quality to conduct the analysis. The next step is to remove a 10% sample of records ("*validation*") to be held out of **any** analysis and used solely for the final validation of model accuracy. The remaining 90% of records are stored in the *edx* dataset. Any records in *validation* that contain a *movieId* or *userId* that is not in the training set are moved to *edx* to ensure that we can always make a rating prediction.
+
+We can now conduct exploratory data analysis for each data field, this will inform the model building process
+
+## ii. movieId 
+
+The mean number of reviews per movie is `r round(nrow(edx) / n_distinct(edx$movieId),0)`, but the distribution is heavily positively skewed:
+
+```{r reviews per movie id, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per movie', echo = FALSE}
+#Chart distribution of number of reviews per movieId
+
+# Mean number of reviews per movie to annotate chart
+reviews_per_movie <- round(nrow(edx) / n_distinct(edx$movieId),0) 
+
+# Calculate number of reviews for each movieId
+movie_averages <- edx %>% group_by(movieId, title) %>% 
+  summarise(n_reviews = n(), avg_rating = mean(rating)) %>% ungroup()
+
+# Plot distribution of number of reviews per movie
+movie_averages %>%  ggplot(aes(n_reviews)) + 
+  geom_histogram(binwidth = 50, fill = chart_col_1) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype =
+    "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+    axis.title.y = element_text(size = rel(1.5))) +
+  labs(x = "Number of reviews", y = "Number of movies") +
+  scale_y_continuous(breaks = seq(0,2500,500), labels = scales::comma) +
+  scale_x_continuous(breaks = seq(0,35000,5000), labels = scales::comma) +  
+  geom_vline(xintercept = reviews_per_movie, colour = "red", size = 0.3, linetype = "dashed") +
+  annotate("text", label = paste0("<<< Mean of ", round(reviews_per_movie,0)), x = reviews_per_movie +        4500, y = 1900) 
+```
+
+Looking at the summary statistics for the number of reviews per movie, the first quartile only have `r as.numeric(quantile(movie_averages$n_reviews, 0.25))` reviews or fewer and the median number of reviews is `r median(movie_averages$n_reviews)`:
+
+```{r movieId summary, echo = FALSE}
+# Summary statistics for number of reviews per movieId
+tidy(summary(movie_averages$n_reviews)) %>% KableTidy
+```
+
+Further, when looking at the movies with an average rating of four or greater we can see a significant majority have a low number of reviews:
+
+```{r reviews for highly rated , echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews for films with average rating of four or greater'}
+movie_averages %>% filter(avg_rating > 4) %>% ggplot(aes(n_reviews)) + 
+  geom_histogram(binwidth = 200,  fill = chart_col_1) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+      axis.title.y = element_text(size = rel(1.5))) +
+  scale_x_continuous(breaks = seq(0,35000,10000), labels = scales::comma) +  
+  labs(x = "Number of reviews", y = "Number of movies")
+```
+
+Of the `r sum(movie_averages$avg_rating >=4)` movies with a rating of four or higher, 
+`r sum(movie_averages$avg_rating >=4 & movie_averages$n_reviews <= 3)` only have three reviews or fewer. These movies appear to be quite obscure and their high rating should be treated with caution:
+
+```{r highly rated with few reviews, echo = FALSE}
+movie_averages %>% filter(avg_rating > 4) %>% arrange(n_reviews) %>% head(5) %>% KableTidy
+```
+
+In contrast, movies with a high number of reviews are instantly recognisable and highly critically acclaimed titles whose average rating is justified:
+
+```{r highly rated with lots of reviews, echo = FALSE}
+movie_averages %>% filter(avg_rating > 4) %>% arrange(desc(n_reviews)) %>% head(5) %>% KableTidy
+```
+
+This needs to be considered when building the model, as we should have less confidence in the average rating for movies with a small number of reviews. Failing to adjust for this issue could lead to overfitting, which can lead to the selection of a model that has good accuracy for the training set, but is poor for the validation set. 
+
+Regularisation is a popular technique for reducing the risk of overfitting and it will be used in the final model. Regularisation works by shrinking the coefficient of (in this case) *movieId* towards zero when there are a small number of observations. 
+
+
+## iii. userId
+
+The number of reviews per user is also positively skewed, with a much lower average than the number of reviews per movie:
+
+```{r reviews per userId, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per user'}
+# Mean number of reviews per user to annotate chart
+reviews_per_user <- round(nrow(edx) / n_distinct(edx$userId),0) 
+
+# Number of reviews per user 
+user_averages <- edx %>% group_by(userId) %>% summarise(n_reviews = n()) 
+
+# Plot distribution of number of reviews per user
+user_averages %>%  ggplot(aes(n_reviews)) + 
+  geom_histogram(binwidth = 50, fill = chart_col_1) + 
+  geom_vline(xintercept = reviews_per_user, colour = "red", size = 0.3, linetype = "dashed") +
+  scale_y_continuous(breaks = seq(0,30000,5000), labels = scales::comma) +
+  scale_x_continuous(breaks = seq(0,8000,2000), labels = scales::comma) +
+  annotate("text", label = paste0("<<< Mean of ", round(reviews_per_user,0)), x = reviews_per_user + 1050, y = 25000) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+      axis.title.y = element_text(size = rel(1.5))) +
+  labs(x = "Number of reviews", y = "Number of users")
+```
+
+The mean is within the interquartile range, which was not the case for the number of reviews per movie, and users had to have at least 10 reviews to be included, so the skew is less extreme:
+
+```{r userId summary, echo = FALSE}
+tidy(summary(user_averages$n_reviews)) %>%  KableTidy
+```
+
+Whilst the skew for reviews per user is less extreme, it is still strong and regularisation would likely improve prediction accuracy.
+
+## iv. genres
+
+```{r distinct genres, echo = FALSE }
+# Create list of the unique genres, to be used below
+genres <- edx %>% group_by(genres) %>% summarise(n_reviews = n(), n_movies = n_distinct(movieId)) %>% 
+  arrange(desc(n_reviews))
+```
+
+The *genre* field is a combination individual genres from a list of `r genres %>% separate_rows(genres, sep = "\\|") %>% group_by(genres) %>% summarise(number = n()) %>% nrow()` options:
+
+
+```{r genre options, echo = FALSE }
+# Split out the elements of the genre field and show in a simple table
+genres %>% separate_rows(genres, sep = "\\|") %>% group_by(genres) %>% summarise(number = n()) %>% 
+  .$genres %>% matrix(nrow = 4)
+```
+
+The most complex value for *genre* has `r max(str_count(genres$genres,"\\|")) + 1` different elements:
+
+```{r longest genres, echo = FALSE }
+genres %>% select(genres) %>% mutate(sub_genres = str_count(genres,"\\|") + 1) %>% arrange(desc(sub_genres)) %>% head(5) %>% KableTidy
+```
+
+There are `r nrow(genres)` unique values in the *genre* field and the most popular have a large number of reviews:
+
+```{r most popular genres, echo = FALSE}
+genres %>% top_n(5) %>% KableTidy
+```
+
+
+In theory the *genre* could provide useful predictive power, but the definition of a movie's *genre* is largely subjective. Whilst the individual genre elements are quite intuitive (drama, comedy etc), it is very difficult to quantify their existence in a movie. 
+
+We may expect to find films in the same franchise would have the same *genres*, but this is not always the case, as illustrated with a couple of examples:
+
+```{r genres for franchises, echo = FALSE}
+edx %>% filter(str_detect(title, "Terminator")) %>% group_by(title, genres, released) %>% 
+  summarise(n_reviews = n()) %>% arrange(released) %>% select(-released) %>%  KableTidy
+
+edx %>% filter(str_detect(title, "Star Trek")) %>% group_by(title, genres, released) %>% 
+  summarise(n_reviews = n()) %>% arrange(released) %>% select(-released) %>%  KableTidy
+```
+
+Whilst there are common elements between the genres within each franchise, they are generally distinct from each other. Therefore it looks unlikely that *genre* will provide stronger predictive power for *rating* than *movieId* and *userId*.
+
+## v. timestamp
+
+```{r time fields, echo = FALSE}
+# Add new time based fields
+Sys.setenv(TZ="UTC")
+edx <- edx %>% mutate(released = as.numeric(str_sub(title, str_length(title)-4, str_length(title)-1)),
+        review_year = year(round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "year")),
+        review_yearmon = round_date(as.POSIXct(timestamp, origin = "1970-01-01"),unit = "month"),
+        review_age = review_year - released)
+```
+
+The timestamp records when the review was submitted, measured in the number of seconds since 1st Jan 1970 (UTC). The movie *title* also contains the year that the movie was released, so this is extracted to calculate the age of the movie at the time of each review.
+
+The earliest review date is `r format(as.POSIXct(min(edx$timestamp), origin = "1970-01-01"),format='%d-%b-%Y')` and the most recent is `r format(as.POSIXct(max(edx$timestamp), origin = "1970-01-01"),format='%d-%b-%Y')`. Plotting the number of reviews against the date, grouped by year and month, shows an unexpected pattern:
+
+```{r review count over time, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per month'}
+edx %>% group_by(review_yearmon) %>% summarise(reviews = n()) %>% ggplot(aes(review_yearmon, reviews)) +
+  geom_line(colour = chart_col_1) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+      axis.title.y = element_text(size = rel(1.5))) +
+  scale_y_continuous(breaks = seq(0,250000,50000),labels = scales::comma) +
+  labs(x = "Review date", y = "Number of reviews")
+```
+
+We would expect to see a smooth change in the number of reviews over time, probably increasing as more users are added. There is no explanation given for the sudden changes in the number of reviews, there could be data classification errors or it could be how the records were chosen from the larger MovieLens dataset. Regardless, it raises concerns about the predictive power of the timestamp of the review.
+
+We can still explore the data to see if any patterns emerge over time, starting with the prevalence of the different ratings over time. The following chart shows the proportion of ratings in each year that were given each rating:
+
+```{r rating prevalence, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Prevalence of ratings over time'}
+# Chart the proportion of each rating level by year
+review_per_year <- edx %>% group_by(review_year) %>% summarise(tot_reviews = n()) 
+
+edx %>% group_by(rating, review_year) %>% summarise(reviews = n()) %>%
+  left_join(review_per_year, by = "review_year") %>% 
+  mutate(review_prop = reviews / tot_reviews) %>% 
+  ggplot(aes(review_year,rating,fill = review_prop)) + geom_tile()+
+  scale_fill_gradient2(low = chart_col_1, high = chart_col_2,  mid = "white", midpoint = 0.3, na.value = NA) +
+  labs( x = "Year of review", y = "Rating", fill = "Proportion of \n annual total")
+```
+
+```{r half point introduced, echo = FALSE}
+# find the earliest timestamp that had a half point rating
+first_half_rating <- edx %>% mutate(temp = rating%%1) %>% filter(temp == 0.5)%>% 
+  summarise(start = min(timestamp)) %>% .$start
+```
+
+We can immediately see that half point ratings were only introduced part way through the time period, on `r format(as.POSIXct(first_half_rating, origin = "1970-01-01"),format='%d-%b-%Y')` to be precise. This helps to explain why the distribution of ratings across the whole time period has lower values for half point ratings than might be expected:
+
+```{r rating distribution, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per rating'}
+# Distribution of ratings for full time period
+edx %>% group_by(rating) %>% summarise(n_reviews = n()) %>% 
+  ggplot(aes(rating, n_reviews)) + geom_bar(stat = "identity", fill = chart_col_1) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  scale_y_continuous(breaks = seq(0,2500000,500000), labels = scales::comma) +
+  labs(x = "Rating", y = "Number of reviews")
+```
+
+When the distribution of ratings is split to before and after `r format(as.POSIXct(first_half_rating, origin = "1970-01-01"),format='%d-%b-%Y')`, both datasets are far more normally distributed:
+
+```{r rating distribution pre and post half point, echo = FALSE, out.width = '45%', fig.align = 'center', fig.cap = 'Number of reviews per rating prior to (left) and after introduction of half star ratings (right)', fig.show="hold"}
+# Distribution of ratings, split to before and after introduction of half point ratings
+
+edx %>% filter(timestamp < first_half_rating) %>% group_by(rating) %>% summarise(n_reviews = n()) %>% 
+  ggplot(aes(rating, n_reviews)) + geom_bar(stat = "identity", fill = chart_col_1) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  scale_y_continuous(breaks = seq(0,2500000,400000), labels = scales::comma) +
+  labs(x = "Rating", y = "Number of reviews")
+
+edx %>% filter(timestamp >= first_half_rating) %>% group_by(rating) %>% summarise(n_reviews = n()) %>% 
+  ggplot(aes(rating, n_reviews)) + geom_bar(stat = "identity", fill = chart_col_1) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  scale_y_continuous(breaks = seq(0,1000000,200000), labels = scales::comma) +
+  labs(x = "Rating", y = "Number of reviews")
+```
+
+The following chart provides a more detailed look at the change in average rating since 1997 (prior years excluded due to extreme volatility). Each data point is the average for an individual month, with a smoothed regression line:
+
+```{r average rating over time, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Average rating over time'}
+edx %>% filter(review_year >= 1997) %>% group_by(review_yearmon) %>% summarise(avg_rat = mean(rating)) %>%
+  ggplot(aes(review_yearmon, avg_rat)) + geom_point(colour = chart_col_1) + 
+  geom_smooth(method = "loess", span = 0.1, method.args = list(degree=1), colour = chart_col_2) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  labs( x = "Date", y = "Average rating")
+```
+
+There are some strong movements in the average rating, but these appear to be erratic with low predictive power.
+
+Rather than looking at how all ratings change over time, we can look at how the average rating for individual movies evolve over time, by using the age of the film at the time of the review. The following chart shows the pattern for the five movies with the largest number of reviews:
+
+```{r rating over time top five, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Average rating over time for five most frequently reviewed movies'}
+# Average rating over time for the five most frequently reviewed movies
+edx %>% group_by(movieId, title) %>% summarise(n_reviews = n()) %>% 
+  arrange(desc(n_reviews)) %>% head(5)  %>% left_join(edx, by = "movieId") %>% 
+  group_by(review_age, title.x) %>% 
+  summarise(avg_rating = mean(rating), reviews = n()) %>% ungroup() %>% 
+  ggplot(aes(review_age, avg_rating))  + 
+  geom_smooth(aes(colour = title.x),method = "loess", span = 0.4, method.args = list(degree=1), se = FALSE) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5)), legend.position = "bottom") +
+  guides(colour=guide_legend(nrow=3)) +
+  labs(x = "Age of movie", y = "Average rating", colour = "Movie title")
+```
+
+Whilst this chart only looks at five movies, they have jointly received `r edx %>% group_by(movieId) %>% summarise(n_reviews = n()) %>%   arrange(desc(n_reviews)) %>% head(5)  %>% summarise(total_reviews = sum(n_reviews)) %>% .$total_reviews` reviews. Therefore the lack of pattern in this chart suggests that age of movie at time of review will not be a powerful predictor.
+
+## vi. Choice of input data
+
+Given the findings above, the data fields that appear to show the most predictive power are the *movieId* and *userId*, so these will be the first variables we use to build models.
+
+# 3. Modelling
+
+## i. Data preparation
+
+```{r create test and training sets, include = FALSE}
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+train_set <- edx[-test_index,]
+test_set_temp <- edx[test_index,]
+
+# Ensure every record in the test data has info for user and movie in the training data
+test_set <- test_set_temp %>% semi_join(train_set, by = "userId") %>% semi_join(train_set, by = "movieId")
+
+# Add back into the training set
+train_set <- bind_rows(train_set, removed)
+```
+
+Potential models will be trained using 90% of the *edx* dataset, with the remainder being used to test each model. The course instructions stipulated that root mean squared error (RMSE) be used as the loss function test model accuracy:
+
+```{r loss function, include = FALSE}
+# Define the loss function as RMSE
+loss <- function(pred_rating, act_rating){
+  sqrt(mean((pred_rating - act_rating)^2))
+}
+```
+
+$$RMSE  = \sqrt \frac {\sum_{i,u} (y_{i,u} - \hat{y}_{i,u})^2}{N}$$
+
+Where:
+
+|      $y_{i,u}$ = actual rating given for movie *i* by user *u*
+
+|      $\hat{y}_{i,u}$ = predicted rating for movie *i* by user *u*
+
+|      N = number of movie ratings
+
+
+## ii. Naive model
+
+The use of a naive model is always a good starting point for any machine learning process. It sets a benchmark performance that more sophisticated models need to beat to justify their complexity. In this case, the use of the mean average of all known ratings ($\mu$) can be used as the single value for all predictions. Any difference to the actual rating is assumed to be due to random variation:
+
+$$Y_{i,u} = \mu + \epsilon_{i,u}$$
+
+
+Where:
+
+|      $\mu$ = mean average of all actual ratings
+
+|      $\epsilon_{i,u}$ = random variation for rating of movie *i* by user *u*
+
+
+```{r first result, include = FALSE}
+global_avg <- mean(train_set$rating)
+results <- data.frame(method = "Mean movie rating", RMSE = loss(global_avg, test_set$rating))
+```
+
+
+The RMSE for this model is `r loss(global_avg, test_set$rating)`, which is large, but not unsurprising given the simplicity of the approach. We will need to make better use of the data if we are to beat the target RMSE of `r target`.
+
+## iii. Movie bias
+
+Only using $\mu$ to predict the rating fails to recognise the range of average ratings that different movies recieve:
+
+```{r distribution of average ratings, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Distribution of average movie ratings'}
+train_set %>% group_by(movieId) %>% summarise(avg_rating = mean(rating)) %>% 
+  group_by(avg_rating) %>% ggplot(aes(avg_rating)) +
+  geom_histogram(binwidth = 0.5,  fill = chart_col_1, colour = "white") + 
+  scale_y_continuous(breaks = seq(0,5000,1000), labels = scales::comma) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  labs(x = "Average rating", y = "Number of movies")
+```
+
+We can calculate a *movie bias* ($b_{i}$) by taking the average difference between the actual rating ($y_{i,u}$)and $\mu$ for each *movieId*:
+
+$$b_{i} = \frac {\sum_{u} (y_{i,u} - \mu)}{N}$$
+
+Our model now becomes: 
+
+$$Y_{i,u} = \mu + b_{i} + \epsilon_{i,u}$$
+Where:
+
+|      $\mu$ = mean average of all actual ratings
+
+|      $b_{i}$ = movie effect
+
+|      $\epsilon_{i,u}$ = random variation for rating of movie *i* by user *u*
+
+|
+
+Adding the movie bias, reduces the RMSE, but it is still far in excess of the target:
+
+```{r add movie bias, echo = FALSE}
+# Calculate the movieId bias
+b_i <- train_set %>% mutate(resid = rating - global_avg) %>% group_by(movieId) %>% 
+  summarise(b_i = mean(resid))
+# Use to make new predictions and measure RMSE
+test_set <- test_set %>% left_join(b_i, by = "movieId") %>% mutate(pred_rating_i = global_avg + b_i)
+results <- rbind(results, 
+          data.frame(method = "Movie bias", RMSE = loss(test_set$pred_rating_i, test_set$rating)))
+results %>% KableTidy
+```
+
+## iv. User bias
+
+Just as there was a range of average ratings for different movies, the same is true of users. It makes intuitive sense that some users will tend to be more harsh in their ratings than others. The following chart shows the distribution of residuals ($y_{u,i} - \mu - b_{i}$):
+
+```{r distribution of residuals , echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Distribution of residuals for movie bias model'}
+# Calculate residuals
+b_u <- train_set %>% left_join(b_i, by = "movieId") %>% mutate(resid = rating - global_avg - b_i) %>% 
+  group_by(userId) %>% summarise(b_u = mean(resid))
+# Plot distribution
+b_u %>% ggplot(aes(b_u)) + 
+  geom_histogram(binwidth = 0.5,  fill = chart_col_1, colour = "white") + 
+  scale_y_continuous(breaks = seq(0,50000,10000), labels = scales::comma) +
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  labs(x = "Average rating", y = "Number of movies")
+```
+
+We can add the user bias to the model:
+
+$$Y_{i,u} = \mu + b_{i} + b_{u} +\epsilon_{i,u}$$
+
+Where:
+
+|      $\mu$ = mean average of all actual ratings
+
+|      $b_{i}$ = movie effect
+
+|      $b_{u}$ = user specific effect
+
+|      $\epsilon_{i,u}$ = random variation for rating of movie *i* by user *u*
+
+|
+
+The RMSE is now very slightly below the target level:
+
+```{r add user bias and test RMSE, echo = FALSE}
+# Create new predictions by including the user bias, test RMSE
+test_set <- test_set %>% left_join(b_u, by = "userId") %>% mutate(pred_rating_i_u = pred_rating_i + b_u)
+results <- rbind(results, 
+          data.frame(method = "User bias", RMSE = loss(test_set$pred_rating_i_u, test_set$rating)))
+results %>% KableTidy
+```
+
+
+This is not sufficient however. This result is a random variable as the training and test sets were created using sampling, a different sample may produce a worse RMSE. Furthermore, the true test is the assessment against the *validation* set which is also a random sample and the model could be less accurate for that data.
+
+## v. Using recosystem
+
+So far the models have only considered how each movie is rated by different users and how each user rates different movies. There is a wealth of additional information that can be gleaned by identifying similarities between users and between movies, matrix factorisation is one approach that can be used to achieve this. 
+
+Essentially the objective is to use the observed values in the matrix of *movieId* and *userId*  to predict the unknown values. Since we have already calculated the bias for *movieId* and *userId*, we want to predict the unknown values for the residuals: $Y_{i,u} - \mu - b_{i} - b_{u}$  
+
+This indicative example shows what the problem looks like:
+
+```{r movie user interaction example, echo = FALSE}
+tribble(
+  ~" ",     ~"Movie 1",    ~"Movie 2", ~"Movie 3",   ~" ... ",        ~"Movie n",
+  #--             |--   |-- |-- |--                    /--
+  "User 1",   "??", "??", "0.4","...", "??",
+  "User 2",   "??", "3", "??", "...","-0.5",
+  "User 3",   "-1.2", "??", "??", "...","??",
+  "...",   "...", "...", "...", "...","...",
+  "User m",   "0.3", "-0.5", "??","...", "??",
+) %>% KableTidy()
+```
+
+Our model will then be the following:
+
+$$Y_{i,u} = \mu + b_{i} + b_{u} +\alpha_{i,u} +\epsilon_{i,u}$$
+
+Where:
+
+|      $\mu$ = mean average of all actual ratings
+
+|      $b_{i}$ = movie effect
+
+|      $b_{u}$ = user specific effect
+
+|      $\alpha_{i,u}$ = movie - user interaction effect
+
+|      $\epsilon_{i,u}$ = random variation for rating of movie *i* by user *u*
+
+
+Whilst there are numerous matrix factorisation techniques available, the *LIBMF* library has been shown to perform strongly, making use of modern multicore processors to perform parallel computations to improve speed[^3]. The *recosystem* package is a wrapper for LIBMF that simplifies data preparation and model building and has been chosen for this project.
+
+
+[^3]: https://github.com/yixuan/recosystem/blob/master/README.md
+
+```{r use recosystem, echo = FALSE, include = FALSE}
+
+# add reisduals to the test and training sets
+train_set <- train_set %>% left_join(b_i, by = "movieId") %>% left_join(b_u, by = "userId") %>% 
+  mutate(resids = rating - global_avg - b_i - b_u)
+test_set <- test_set %>% mutate(resids = rating - pred_rating_i_u)
+
+# Create the datasets required for recosystem, note test set doesn't require ratings
+reco_train_set <- data_memory(user_index = train_set$userId, item_index = train_set$movieId,
+                              rating = train_set$resids)
+reco_test_set <- data_memory(user_index = test_set$userId, item_index = test_set$movieId)
+
+# Create an empty model object
+r = Reco()
+
+# Tune the model to select the optimal parameters
+opts = r$tune(reco_train_set, opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2),
+                                          costp_l1 = 0, costq_l1 = 0,
+                                          nthread = 4, niter = 10))
+
+# Train the model using the optimal set of parameters as held in opts$min
+r$train(reco_train_set, opts = c(opts$min, nthread = 4, niter = 10))
+
+# Create the predictions for the test set residuals
+pred_rvec = r$predict(reco_test_set, out_memory())
+
+# Add the residual predictions to the test set
+test_set <- cbind(test_set, pred_rvec) %>% 
+  mutate(final_pred = global_avg + b_i + b_u + pred_rvec, final_resids = rating - final_pred,
+         final_pred_capped = ifelse(final_pred > 5, 5, ifelse(final_pred < 0.5, 0.5, final_pred)))
+```
+
+After the initial data preparation, the model parameters need to be tuned using cross validation. The values recommended by the package authors were used initially:
+
+```{r ercosystem tuning, echo = FALSE}
+
+opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2),
+                                          costp_l1 = 0, costq_l1 = 0,
+                                          nthread = 4, niter = 10)
+
+tribble(
+  ~"Parameter",     ~"Description",    ~"Tuning options",
+  #--             |--                     /--
+  names(opts[1]),   "Number of latent factors",       opts[[1]],         
+  names(opts[2]),   "Learning rate, which can be thought of as the step size in gradient descent",       opts[[2]],         
+  names(opts[3]),   "L1 regularization cost for user factors",       opts[[3]],         
+  names(opts[4]),   "L1 regularization cost for movie factors",       opts[[4]],         
+  names(opts[5]),   "Number of threads for parallel computing",       opts[[5]],         
+  names(opts[6]),   "Number of iterations",       opts[[6]]
+) %>% KableTidy()
+```
+
+
+Note that both *movieId* and *userId* are regularised, addressing the issue of extreme values from small numbers of observations highlighted earlier.
+
+The parameters that gave the smallest loss were then used to train the final model, which can in turn be used to make our predictions for the residuals. In a small number of cases the prediction lies outside the range of true potential ratings (0.5 to 5), so as a final step, our predictions are capped between 0.5 and 5.
+
+The results of this model were very impressive and comfortably beat the target RMSE:
+
+```{r RMSE for recosystem, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'RMSE results for each model'}
+results <- rbind(results, 
+          data.frame(method = "Recommender", RMSE = loss(test_set$final_pred_capped, test_set$rating)))
+results$method <- factor(results$method, levels = results$method)
+results %>% ggplot(aes(method, RMSE)) + geom_col(fill = chart_col_1) + 
+  theme(panel.background = element_rect(fill = chart_back, colour = "black", size = 0.5, linetype = "solid"), axis.text = element_text(size = rel(1.5)), axis.title.x = element_text(size = rel(1.5)),
+        axis.title.y = element_text(size = rel(1.5))) +
+  geom_hline(yintercept = target, colour = "red", size = 0.3, linetype = "dashed" ) + 
+  annotate("text", label = paste0("Target RMSE is ", target), x = 4, y = target + 0.05, size = 4) +
+  labs(x = "Model", y = "RMSE")
+```
+
+
+There may be opportunities to further improve the model by allowing the tuning process to consider a wider range of values. The optimal parameters from the initial tuning included the smallest learning rate and the largest number of latent factors, perhaps reducing the former and / or increasing the latter would provide another improvement in accuracy.
+
+Applying such changes would significantly increase the processing time however, which is unnecessary given the performance of the current model. Given the impressive RMSE of this model, it will be used as our final model.
+
+
+
+# 4. Results
+
+```{r final RMSE, echo = FALSE}
+# Add movie and user bias to validation set 
+validation <- validation %>% left_join(b_i, by = "movieId") %>% left_join(b_u, by = "userId") 
+  
+# Create dataset for recosystem
+reco_validation_set <- data_memory(user_index = validation$userId, item_index = validation$movieId)
+
+# Create the residual predictions 
+pred_rvec = r$predict(reco_validation_set, out_memory())
+
+# Create the final predictions using the global average movie rating, movie bias, user bias and the residual predictions from recosystem. Then cap to keep predictions with feasible limits
+validation <- cbind(validation, pred_rvec) %>% mutate(final_pred = global_avg + b_i + b_u + pred_rvec,
+            final_pred_capped = ifelse(final_pred > 5, 5, ifelse(final_pred < 0.5, 0.5, final_pred)))
+```
+
+The final assessment of our chosen model is performed against the *validation* set which has been held out of all analysis and testing thus far. The RMSE for the validation set is `r loss(validation$final_pred_capped, validation$rating)`, which is significantly better than the target of `r target`, therefore the model has achieved our stated objective.
+
+
+# 5. Conclusions and further work
+
+A dataset of over ten million movie review ratings from MovieLens was used to build models to predict ratings for other movie reviews. The objective was to develop a model that would achieve an RMSE of `r target` or lower. 
+
+The simplest models calculated and applied bias terms for the movie and for the user, they produced good results, but were not accurate enough to beat the target RMSE. Our final model used matrix factorisation to identify similarities between movies and between users to draw on more rating information to make predictions. This significantly improved accuracy and comfortably beat the target RMSE.
+
+There are two areas that could improve accuracy further and could warrant additional work
+
+## Splitting pre and post half star
+
+All ratings prior to `r format(as.POSIXct(first_half_rating, origin = "1970-01-01"),format='%d-%b-%Y')` were limited to whole numbers, with half point ratings introduced from this time. If the model is intended to be used to make predictions on future reviews where half point ratings are available, then it may improve accuracy to only use known ratings from `r format(as.POSIXct(first_half_rating, origin = "1970-01-01"),format='%d-%b-%Y')` or later. This approach was not tested in this assessment as the exercise was to assess all the reviews in the dataset provided, including many from prior to the introduction of half point ratings.
+
+## Further tuning of recosystem
+
+The initial range of parameters used to tune the recosystem model provided an excellent RMSE which achieved our objective, therefore no further tuning was undertaken. However it is noted that the learning rate and number of latent factors selected were at the extremes of the range made available, so extending the range of parameters to allow for an even more gradual rate of learning and / or including more latent factors could improve accuracy further.
+
+
