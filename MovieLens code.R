@@ -122,7 +122,7 @@ movie_averages <- edx %>% group_by(movieId, title) %>%
 # Plot distribution of number of reviews per movie
 movie_averages %>%  ggplot(aes(n_reviews)) + 
   geom_histogram(binwidth = 50,  fill = "#008B61") + 
-  geom_vline(xintercept = reviews_per_movie, colour = "red", size = 0.3, linetype = "dashed") +
+  geom_vline(xintercept = reviews_per_movie, colour = "red", size = 0.6, linetype = "dashed") +
   scale_y_continuous(breaks = seq(0,2500,500)) +
   scale_x_continuous(breaks = seq(0,35000,5000)) +
   annotate("text", label = paste0("<<< Mean of ", round(reviews_per_movie,0)), x = reviews_per_movie + 4500, y = 1900) +
@@ -390,6 +390,37 @@ validation <- validation %>% left_join(b_i, by = "movieId") %>% left_join(b_u, b
 
 reco_validation_set <- data_memory(user_index = validation$userId, item_index = validation$movieId)
 
-pred_rvec = r$predict(reco_validation_set, out_memory())
-validation <- cbind(validation, pred_rvec) %>% mutate(final_pred = global_avg + b_i + b_u + pred_rvec)
-loss(validation$final_pred, validation$rating)
+reco_pred = r$predict(reco_validation_set, out_memory())
+validation <- cbind(validation, reco_pred) %>% mutate(final_pred = global_avg + b_i + b_u + reco_pred,
+                                                      final_pred_capped = ifelse(final_pred > 5, 5, ifelse(final_pred < 0.5, 0.5, final_pred)))
+loss(validation$final_pred_capped, validation$rating)
+glimpse(validation)
+mean(validation$final_pred_capped)
+mean(validation$rating)
+loss(validation$final_pred_capped, validation$rating)
+
+########
+
+str(validation)
+
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add movie and user bias to validation set 
+validation <- validation %>% left_join(b_i, by = "movieId") %>% left_join(b_u, by = "userId") 
+
+# Create dataset for recosystem
+reco_validation_set <- data_memory(user_index = validation$userId, item_index = validation$movieId)
+
+# Create the residual predictions 
+reco_pred = r$predict(reco_validation_set, out_memory())
+
+# Create the final predictions using the global average movie rating, movie bias, user bias and the
+# residual predictions from recosystem. Then cap to keep predictions within feasible limits
+validation <- cbind(validation, reco_pred) %>% mutate(final_pred = global_avg + b_i + b_u + reco_pred,
+                                                      final_pred_capped = ifelse(final_pred > 5, 5, ifelse(final_pred < 0.5, 0.5, final_pred)))
+glimpse(validation)
+mean(validation$final_pred_capped)
+mean(validation$rating)
+loss(validation$final_pred_capped, validation$rating)
