@@ -1,7 +1,7 @@
 ---
-title: "HarvardX PH125.9x Data Science: Capstone"
+title: "MovieLens - Movie recommendation project"
 author: "Andy Birch"
-date: "10/05/2021"
+date: "22/05/2021"
 output: 
   pdf_document:
     extra_dependencies: ["float"]
@@ -151,11 +151,11 @@ n_distinct(paste0(movielens$movieId, "-", movielens$userId)) == nrow(movielens)
 
 Having completed these simple checks, we know that the data is of sufficient quality to conduct the analysis. The next step is to remove a 10% sample of records ("*validation*") to be held out of **any** analysis and used solely for the final validation of model accuracy. The remaining 90% of records are stored in the *edx* dataset. Any records in *validation* that contain a *movieId* or *userId* that is not in the training set are moved to *edx* to ensure that we can always make a rating prediction.
 
-We can now conduct exploratory data analysis for each data field, this will inform the model building process
+We can now conduct exploratory data analysis for each data field, this will inform the model building process.
 
 ## ii. movieId 
 
-The mean number of reviews per movie is `r round(nrow(edx) / n_distinct(edx$movieId),0)`, but the distribution is heavily positively skewed:
+The mean number of reviews per *movie* is `r round(nrow(edx) / n_distinct(edx$movieId),0)`, but the distribution is heavily positively skewed:
 
 ```{r reviews per movie id, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per movie', echo = FALSE}
 #Chart distribution of number of reviews per movieId
@@ -188,7 +188,9 @@ Looking at the summary statistics for the number of reviews per movie, the first
 tidy(summary(movie_averages$n_reviews)) %>% KableTidy
 ```
 
-Further, when looking at the movies with an average rating of four or greater we can see a significant majority have a low number of reviews:
+Further, when looking at the highest rated movies (those with an average rating of four or greater), we can see a significant majority have a low number of reviews:
+
+\pagebreak
 
 ```{r reviews for highly rated , echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews for films with average rating of four or greater'}
 movie_averages %>% filter(avg_rating > 4) %>% ggplot(aes(n_reviews)) + 
@@ -212,15 +214,15 @@ In contrast, movies with a high number of reviews are instantly recognisable and
 movie_averages %>% filter(avg_rating > 4) %>% arrange(desc(n_reviews)) %>% head(5) %>% KableTidy
 ```
 
-This needs to be considered when building the model, as we should have less confidence in the average rating for movies with a small number of reviews. Failing to adjust for this issue could lead to overfitting, which can lead to the selection of a model that has good accuracy for the training set, but is poor for the validation set. 
+This needs to be considered when building the model, as we should have less confidence in a high average rating for a movie with a small number of reviews. Failing to adjust for this issue could lead to overfitting, which can lead to the selection of a model that has good accuracy for the training set, but is poor for the validation set. 
 
 Regularisation is a popular technique for reducing the risk of overfitting and it will be used in the final model. Regularisation works by shrinking the coefficient of (in this case) *movieId* towards zero when there are a small number of observations. 
 
 
 ## iii. userId
 
-The number of reviews per user is also positively skewed, with a much lower average than the number of reviews per movie:
-
+The number of reviews per *user* is also positively skewed, with a much lower average than the number of reviews per movie:
+\pagebreak
 ```{r reviews per userId, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Number of reviews per user'}
 # Mean number of reviews per user to annotate chart
 reviews_per_user <- round(nrow(edx) / n_distinct(edx$userId),0) 
@@ -280,14 +282,14 @@ The most complex combination for *genre* has `r max(str_count(genres$genres,"\\|
 genres %>% select(genres) %>% mutate(sub_genres = str_count(genres,"\\|") + 1) %>% arrange(desc(sub_genres)) %>% head(5) %>% KableTidy
 ```
 
-There are `r nrow(genres)` unique values in the *genre* field and the most popular have a large number of reviews:
+There are `r nrow(genres)` unique values in the *genre* field and the most popular have a large number of reviews (n_reviews) across many movies (n_movies):
 
 ```{r most popular genres, echo = FALSE}
 genres %>% top_n(5) %>% KableTidy
 ```
 
 
-In theory the *genre* could provide useful predictive power, but the definition of a movie's *genre* is largely subjective. Whilst the individual genre elements are quite intuitive (drama, comedy etc), it is very difficult to quantify their existence in a movie. 
+In theory the *genre* could provide useful predictive power, if a user likes a comedy movie for example, it seems reasonable to expect that they will like other comedy movies. However the definition of a movie's *genre* is largely subjective and whilst the individual genre elements are quite intuitive (drama, comedy etc), it is very difficult to quantify their existence in a movie. 
 
 We may expect to find films in the same franchise would have the same *genres*, but this is not always the case, as illustrated with a couple of examples:
 
@@ -351,7 +353,7 @@ edx %>% group_by(rating) %>% summarise(n_reviews = n()) %>%
 ```
 
 When the distribution of ratings is split to before and after `r format(as.POSIXct(first_half_rating, origin = "1970-01-01"),format='%d-%b-%Y')`, both datasets are far more normally distributed:
-
+\pagebreak
 ```{r rating distribution pre and post half point, echo = FALSE, out.width = '45%', fig.align = 'center', fig.cap = 'Number of reviews per rating prior to (left) and after introduction of half star ratings (right)', fig.show="hold"}
 # Distribution of ratings, split to before and after introduction of half point ratings
 
@@ -371,7 +373,7 @@ edx %>% filter(timestamp >= first_half_rating) %>% group_by(rating) %>% summaris
 ```
 
 The following chart provides a more detailed look at the change in average rating since 1997 (prior years excluded due to extreme volatility). Each data point is the average for an individual month, with a smoothed regression line:
-\pagebreak
+
 
 ```{r average rating over time, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Average rating over time'}
 edx %>% filter(review_year >= 1997) %>% group_by(review_yearmon) %>% summarise(avg_rat = mean(rating)) %>%
@@ -385,7 +387,7 @@ edx %>% filter(review_year >= 1997) %>% group_by(review_yearmon) %>% summarise(a
 There are some strong movements in the average rating, but these appear to be erratic with low predictive power.
 
 Rather than looking at how all ratings change over time, we can look at how the average rating for individual movies evolve over time, by using the age of the film at the time of the review. The following chart shows the pattern for the five movies with the largest number of reviews:
-
+\pagebreak
 ```{r rating over time top five, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'Average rating over time for five most frequently reviewed movies'}
 # Average rating over time for the five most frequently reviewed movies
 edx %>% group_by(movieId, title) %>% summarise(n_reviews = n()) %>% 
@@ -409,7 +411,7 @@ Given the findings above, the data fields that appear to show the most predictiv
 
 # 3. Modelling
 
-## i. Data preparation
+## i. Preparation
 
 ```{r create test and training sets, include = FALSE}
 set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
@@ -425,7 +427,7 @@ removed <- anti_join(test_set_temp, test_set)
 train_set <- bind_rows(train_set, removed)
 ```
 
-The *edx* dataset is split into two parts, 90% of records are randomly selected for the training set, the remaining 10% are held back to test each model. The course instructions stipulated that root mean squared error (RMSE) be used as the loss function test model accuracy:
+Firstly the *edx* dataset is split into two parts, 90% of records are randomly selected for the training set, the remaining 10% are held back to test each model. Next we need to define the loss function to test each model, the course instructions stipulated that root mean squared error (RMSE) be used:
 
 ```{r loss function, include = FALSE}
 # Define the loss function as RMSE
@@ -481,7 +483,7 @@ train_set %>% group_by(movieId) %>% summarise(avg_rating = mean(rating)) %>%
   labs(x = "Average rating", y = "Number of movies")
 ```
 
-We can calculate a *movie bias* ($b_{i}$) by taking the average difference between the actual rating ($y_{i,u}$)and $\mu$ for each *movieId*:
+We can calculate a *movie bias* ($b_{i}$) by taking the average difference between the actual rating ($y_{i,u}$) and $\mu$ for each *movieId*:
 
 $$b_{i} = \frac {\sum_{u} (y_{i,u} - \mu)}{N}$$
 
@@ -557,7 +559,7 @@ results %>% KableTidy
 
 This is not sufficient however. This result is a random variable as the training and test sets were created using sampling, a different sample may produce a worse RMSE. Furthermore, the true test is the assessment against the *validation* set which is also a random sample and the model could be less accurate for that data.
 
-## v. Using recosystem
+## v. Matrix factorisation
 
 So far the models have only considered how each movie is rated by different users and how each user rates different movies. There is a wealth of additional information that can be gleaned by identifying similarities between users and between movies, matrix factorisation is one approach that can be used to achieve this. 
 
@@ -631,7 +633,7 @@ test_set <- cbind(test_set, reco_pred) %>%
          final_pred_capped = ifelse(final_pred > 5, 5, ifelse(final_pred < 0.5, 0.5, final_pred)))
 ```
 
-After the initial data preparation, the model parameters need to be tuned using cross validation. The values recommended by the package authors were used initially:
+After the initial data preparation, the model parameters need to be tuned using cross validation. The values recommended by the package authors were used initially[^3]:
 
 ```{r recosystem tuning, echo = FALSE}
 
@@ -658,7 +660,7 @@ The parameters that gave the smallest loss were then used to train the final mod
 
 The results of this model were very impressive and comfortably beat the target RMSE:
 \pagebreak
-```{r RMSE for recosystem, echo = FALSE, out.width = '40%', fig.align = 'center', fig.cap = 'RMSE results for each model', fig.show="hold"}
+```{r RMSE for recosystem, echo = FALSE, out.width = '50%', fig.align = 'center', fig.cap = 'RMSE results for each model', fig.show="hold"}
 results <- rbind(results, 
           data.frame(method = "Recommender", RMSE = loss(test_set$final_pred_capped, test_set$rating)))
 results$method <- factor(results$method, levels = results$method)
@@ -693,13 +695,13 @@ reco_validation_set <- data_memory(user_index = validation$userId,
                                    item_index = validation$movieId)
 
 # Create the residual predictions 
-reco_pred_2 = r$predict(reco_validation_set, out_memory())
+reco_pred = r$predict(reco_validation_set, out_memory())
 
 # Create the final predictions using the global average movie rating, movie bias, 
 # user bias and the residual predictions from recosystem. Then cap to keep predictions
 # within feasible limits
-validation <- cbind(validation, reco_pred_2) %>% mutate(
-    final_pred = global_avg + b_i + b_u + reco_pred_2, 
+validation <- cbind(validation, reco_pred) %>% mutate(
+    final_pred = global_avg + b_i + b_u + reco_pred, 
     final_pred_capped = ifelse(final_pred > 5, 5, 
                         ifelse(final_pred < 0.5, 0.5, final_pred)))
 
@@ -715,7 +717,7 @@ The RMSE for the validation set is `r loss(validation$final_pred_capped, validat
 
 A dataset of over ten million movie review ratings from MovieLens was used to build models to predict ratings for other movie reviews. The objective was to develop a model that would achieve an RMSE of `r target` or lower. 
 
-The simplest models calculated and applied bias terms for the movie and for the user, they produced good results, but were not accurate enough to beat the target RMSE. Our final model used matrix factorisation to identify similarities between movies and between users to draw on more rating information to make predictions. This significantly improved accuracy and comfortably beat the target RMSE.
+The simplest models calculated and applied bias terms for the *movieId* and for the *userId*, they produced good results, but were not accurate enough to beat the target RMSE. Our final model used matrix factorisation to identify similarities between movies and between users to draw on more rating information to make predictions. This significantly improved accuracy and comfortably beat the target RMSE.
 
 There are two areas that could improve accuracy further and could warrant additional work
 
